@@ -3,8 +3,7 @@ name: Build Web to Android APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - "**"
+    branches: [ "**" ]
 
 jobs:
   build:
@@ -17,36 +16,24 @@ jobs:
       - name: Unzip project files
         run: |
           mkdir -p extracted_project
-          ZIP_FILE=$(find . -maxdepth 2 -name "*.zip" ! -name "*apk*.zip" ! -path "./extracted_project/*" | head -n 1)
-          if [ -n "$ZIP_FILE" ]; then
-            echo "Unzipping: $ZIP_FILE"
-            unzip -o "$ZIP_FILE" -d extracted_project
-          else
-            echo "No source zip found, copying repository files to extracted_project..."
-            rsync -a --exclude=".git" --exclude=".github" --exclude="extracted_project" --exclude="*.zip" ./ extracted_project/
-          fi
+          ZIP_FILE=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+          echo "Unzipping: $ZIP_FILE"
+          unzip -o "$ZIP_FILE" -d extracted_project
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: '20'
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
         with:
-          distribution: "temurin"
-          java-version: "21"
+          distribution: 'temurin'
+          java-version: '21'
 
-      - name: Build web app and Android APK
+      - name: Build web app, set app icon and name, and build APK
         run: |
-          APP_DIR=$(find extracted_project -maxdepth 4 -name "package.json" -not -path "*/node_modules/*" -exec dirname {} \; | head -n 1)
-          if [ -z "$APP_DIR" ]; then
-            echo "package.json not found! Listing extracted_project:"
-            find extracted_project -maxdepth 3
-            exit 1
-          fi
-
-          echo "Found project directory: $APP_DIR"
+          APP_DIR=$(find extracted_project -name "package.json" -not -path "*/node_modules/*" -exec dirname {} \; | head -n 1)
           cd "$APP_DIR"
           npm install --legacy-peer-deps
           npm run build
@@ -56,9 +43,15 @@ jobs:
             WEB_DIR="build"
           fi
 
-          printf '{"appId":"com.rafiq.alquran","appName":"رفيق القران","webDir":"%s"}\n' "$WEB_DIR" > capacitor.config.json
+          cat <<EOF > capacitor.config.json
+          {
+            "appId": "com.rafiq.alquran",
+            "appName": "رفيق القرآن",
+            "webDir": "$WEB_DIR"
+          }
+          EOF
 
-          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets @capacitor/local-notifications --legacy-peer-deps
+          npm install @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets --legacy-peer-deps
           npx cap add android
           npx cap sync android
 
@@ -69,48 +62,30 @@ jobs:
           if [ -n "$ICON_SRC" ]; then
             mkdir -p assets
             cp "$ICON_SRC" assets/icon.png
-            npx capacitor-assets generate --android --iconBackgroundColor "#0B3D32" --iconBackgroundColorDark "#0B3D32"
+            npx capacitor-assets generate --android --iconBackgroundColor '#0B3D32' --iconBackgroundColorDark '#0B3D32'
           fi
 
           STRINGS_FILE="android/app/src/main/res/values/strings.xml"
           if [ -f "$STRINGS_FILE" ]; then
-            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n<string name="app_name">رفيق القران</string>\n<string name="title_activity_main">رفيق القران</string>\n<string name="package_name">com.rafiq.alquran</string>\n<string name="custom_url_scheme">com.rafiq.alquran</string>\n</resources>\n' > "$STRINGS_FILE"
+            cat <<EOF > "$STRINGS_FILE"
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">رفيق القرآن</string>
+              <string name="title_activity_main">رفيق القرآن</string>
+              <string name="package_name">com.rafiq.alquran</string>
+              <string name="custom_url_scheme">com.rafiq.alquran</string>
+          </resources>
+          EOF
           fi
-
-          MANIFEST_FILE="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST_FILE" ]; then
-            python3 - <<'PYEOF'
-path = "android/app/src/main/AndroidManifest.xml"
-with open(path, "r", encoding="utf-8") as f:
-    content = f.read()
-
-perms = [
-    "android.permission.POST_NOTIFICATIONS",
-    "android.permission.ACCESS_FINE_LOCATION",
-    "android.permission.ACCESS_COARSE_LOCATION",
-    "android.permission.RECORD_AUDIO",
-    "android.permission.WAKE_LOCK",
-    "android.permission.FOREGROUND_SERVICE"
-]
-
-lines = [f'    <uses-permission android:name="{p}" />' for p in perms if p not in content]
-if lines and "<application" in content:
-    content = content.replace("<application", "\n".join(lines) + "\n\n    <application", 1)
-
-with open(path, "w", encoding="utf-8") as f:
-    f.write(content)
-PYEOF
-          fi
-
-          rm -rf ~/.gradle/caches
 
           cd android
           if [ -f "variables.gradle" ]; then
             sed -i "s/kotlinVersion = .*/kotlinVersion = '1.9.24'/g" variables.gradle
           fi
-          printf 'org.gradle.jvmargs=-Xmx2048m\nandroid.enableJetifier=true\n' >> gradle.properties
+          echo "org.gradle.jvmargs=-Xmx2048m" >> gradle.properties
+          echo "android.enableJetifier=true" >> gradle.properties
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --max-workers=2 -Dorg.gradle.java.home="$JAVA_HOME"
+          ./gradlew assembleDebug -Dorg.gradle.java.home="$JAVA_HOME"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
